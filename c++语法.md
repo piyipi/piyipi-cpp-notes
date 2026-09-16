@@ -3912,6 +3912,229 @@ int main() {
 
 > 这正是上文「类模板成员函数的类外实现」中"分文件链接不到"的根本原因。
 
+### 文件操作
+
+> 📖 官方文档（cppreference）：[文件输入/输出库](https://zh.cppreference.com/w/cpp/io/basic_ifstream) · [std::basic_ifstream](https://zh.cppreference.com/w/cpp/io/basic_ifstream) · [std::basic_ofstream](https://zh.cppreference.com/w/cpp/io/basic_ofstream) · [std::basic_fstream](https://zh.cppreference.com/w/cpp/io/basic_fstream) · [打开模式 ios_base::openmode](https://zh.cppreference.com/w/cpp/io/ios_base/openmode) · [文件系统库 filesystem](https://zh.cppreference.com/w/cpp/filesystem)
+> 📖 官方文档（MSVC · Microsoft Learn）：[\<fstream\>](https://learn.microsoft.com/zh-cn/cpp/standard-library/fstream) · [basic_ifstream 类](https://learn.microsoft.com/zh-cn/cpp/standard-library/basic-ifstream-class) · [basic_ofstream 类](https://learn.microsoft.com/zh-cn/cpp/standard-library/basic-ofstream-class) · [basic_fstream 类](https://learn.microsoft.com/zh-cn/cpp/standard-library/basic-fstream-class) · [ios_base 类](https://learn.microsoft.com/zh-cn/cpp/standard-library/ios-base-class) · [\<filesystem\>](https://learn.microsoft.com/zh-cn/cpp/standard-library/filesystem)
+
+**文件操作**通过 `<fstream>` 提供的**文件流**完成：把文件当成输入 / 输出流，用法与 `std::cin` / `std::cout` 一致。
+
+#### 文件流概述
+
+| 类 | 用途 | 默认打开模式 |
+|---|---|---|
+| `std::ifstream` | 读文件 | `ios::in` |
+| `std::ofstream` | 写文件 | `ios::out` |
+| `std::fstream` | 读写文件 | — |
+
+三者都定义在 `<fstream>` 中，分别是 `basic_ifstream` / `basic_ofstream` / `basic_fstream` 的 typedef。
+
+#### 打开与关闭
+
+打开模式（可用 `|` 组合）：
+
+| 模式 | 含义 |
+|---|---|
+| `std::ios::in` | 读 |
+| `std::ios::out` | 写（默认会截断） |
+| `std::ios::app` | 追加（写到文件末尾） |
+| `std::ios::trunc` | 打开时清空（`out` 的默认行为） |
+| `std::ios::ate` | 打开后立刻定位到末尾 |
+| `std::ios::binary` | 二进制模式 |
+
+```c++
+std::ofstream out("data.txt", std::ios::app);   // 追加模式
+if (!out) { /* 打开失败：文件不可写等 */ }
+```
+
+- 用 `is_open()` 或 `if (!stream)` 检查是否成功；**不要假设一定打开成功**。
+- 文件流是 RAII 对象：**离开作用域自动关闭**，通常无需手动 `close()`（也可显式 `close()`）。
+
+#### 文本文件读写
+
+- **写入**：用 `<<`（与 `cout` 相同）。
+- **读取**：用 `>>`（按**空白**分割，一次读一个"词"）或 `std::getline`（按**行**读取）。
+
+```c++
+#include <fstream>
+#include <iostream>
+#include <string>
+
+int main() {
+    {
+        std::ofstream out("demo.txt");
+        out << "hello\n" << 42 << '\n' << 3.14 << '\n';
+    }   // 离开作用域，自动关闭
+
+    std::ifstream in("demo.txt");
+    std::string word;
+    while (in >> word) std::cout << word << '\n';   // 按"词"读
+    return 0;
+}
+```
+
+输出：
+
+```text
+hello
+42
+3.14
+```
+
+**逐行读取**（推荐用 `getline`）：
+
+```c++
+#include <fstream>
+#include <iostream>
+#include <string>
+
+int main() {
+    {
+        std::ofstream out("lines.txt");
+        out << "line1\nline2\nline3\n";
+    }
+
+    std::ifstream in("lines.txt");
+    std::string line;
+    int n = 0;
+    while (std::getline(in, line)) {     // 逐行读，读到结尾自动停止
+        std::cout << ++n << ": " << line << '\n';
+    }
+    return 0;
+}
+```
+
+输出：
+
+```text
+1: line1
+2: line2
+3: line3
+```
+
+#### 二进制文件读写
+
+二进制模式（`std::ios::binary`）不做任何字符转换，用 `write` / `read` + `reinterpret_cast` 直接读写内存：
+
+```c++
+#include <fstream>
+#include <iostream>
+
+struct Point { int x; int y; };
+
+int main() {
+    Point p{3, 4};
+    {
+        std::ofstream out("p.bin", std::ios::binary);
+        out.write(reinterpret_cast<const char*>(&p), sizeof(p));
+    }
+
+    Point q{};
+    {
+        std::ifstream in("p.bin", std::ios::binary);
+        in.read(reinterpret_cast<char*>(&q), sizeof(q));
+    }
+    std::cout << q.x << ' ' << q.y << '\n';
+    return 0;
+}
+```
+
+输出：
+
+```text
+3 4
+```
+
+> `write` 需要 `const char*`、`read` 需要 `char*`，因此用 `reinterpret_cast` 转换；`sizeof(p)` 是要读写的字节数。
+
+#### 文件定位与状态
+
+| 操作 | 含义 |
+|---|---|
+| `seekg(pos)` / `seekp(pos)` | 读 / 写指针移动到**绝对**位置 |
+| `seekg(off, dir)` / `seekp(off, dir)` | 相对定位（`beg` / `cur` / `end`） |
+| `tellg()` / `tellp()` | 返回当前位置 |
+| `eof()` | 是否到达文件末尾 |
+| `fail()` | 是否发生错误 |
+| `good()` | 状态是否正常 |
+| `clear()` | 清除错误状态 |
+
+```c++
+#include <fstream>
+#include <iostream>
+
+int main() {
+    {
+        std::ofstream out("seek.txt");
+        out << "ABCDEFGHIJ";
+    }
+
+    std::ifstream in("seek.txt");
+    in.seekg(3);                          // 移动到偏移 3
+    std::cout << char(in.get()) << '\n';  // D
+
+    in.clear();                           // 清除状态
+    in.seekg(0, std::ios::end);           // 定位到末尾
+    std::cout << in.tellg() << '\n';      // 10
+    return 0;
+}
+```
+
+输出：
+
+```text
+D
+10
+```
+
+> `seekg` / `tellg` 用于输入流（g = get），`seekp` / `tellp` 用于输出流（p = put）。
+
+#### C++17 filesystem
+
+`<filesystem>` 提供跨平台的路径与文件系统操作：
+
+```c++
+#include <filesystem>
+#include <fstream>
+#include <iostream>
+
+namespace fs = std::filesystem;
+
+int main() {
+    std::ofstream("fs_demo.txt") << "x";   // 写 1 字节
+
+    std::cout << fs::exists("fs_demo.txt") << '\n';                    // 1
+    std::cout << fs::file_size("fs_demo.txt") << '\n';                 // 1
+    std::cout << (fs::path("a") / "b.txt").generic_string() << '\n';   // a/b.txt
+    return 0;
+}
+```
+
+输出：
+
+```text
+1
+1
+a/b.txt
+```
+
+| 常用 | 含义 |
+|---|---|
+| `fs::exists(p)` | 是否存在 |
+| `fs::is_directory(p)` / `fs::is_regular_file(p)` | 类型判断 |
+| `fs::file_size(p)` | 文件大小 |
+| `fs::create_directory(p)` / `fs::remove(p)` | 创建 / 删除 |
+| `fs::path("a") / "b.txt"` | 路径拼接（用 `/`） |
+| `fs::directory_iterator(p)` | 遍历目录 |
+
+#### 常见陷阱
+
+- **不检查打开失败** → 后续读写静默无效；务必 `if (!f) { ... }`。
+- 写模式 `out` 默认**截断**文件；要追加必须用 `std::ios::app`。
+- `>>` 与 `std::getline` 混用：`>>` 会把换行符留在缓冲区，需 `in.ignore()` 处理。
+- 二进制读写必须带 `std::ios::binary`，否则 Windows 下 `\n` 会被转换。
+- 读取出错（如已到 eof）后再 `seekg`，需先 `clear()` 清除状态位。
+
 ## 2.重要的c++库
 
 ### STL
@@ -3956,6 +4179,126 @@ int main() {
 #### 序列容器
 
 ##### vector
+
+**① 声明与初始化**
+
+| 写法 | 含义 |
+|---|---|
+| `vector<int> v;` | 空容器 |
+| `vector<int> v(n);` | `n` 个默认值（元素为 `0`） |
+| `vector<int> v(n, val);` | `n` 个 `val` |
+| `vector<int> v = {1, 2, 3};` | 列表初始化（C++11） |
+| `vector<int> v(other);` | 拷贝构造 |
+| `vector<int> v(first, last);` | 用迭代器区间 `[first, last)` 构造 |
+
+```c++
+#include <iostream>
+#include <vector>
+#include <cstddef>
+
+int main() {
+    std::vector<int> v1;                 // 空
+    std::vector<int> v2(3);              // 3 个 0
+    std::vector<int> v3(3, 7);           // 3 个 7
+    std::vector<int> v4 = {1, 2, 3};     // 列表初始化
+    std::vector<int> v5(v4);             // 拷贝构造
+    std::vector<int> v6(v4.begin(), v4.begin() + 2);  // 迭代器区间
+
+    auto print = [](const std::vector<int>& v) {
+        std::cout << v.size() << ':';
+        for (int x : v) std::cout << ' ' << x;
+        std::cout << '\n';
+    };
+    print(v1);    // 0:
+    print(v2);    // 3: 0 0 0
+    print(v3);    // 3: 7 7 7
+    print(v4);    // 3: 1 2 3
+    print(v5);    // 3: 1 2 3
+    print(v6);    // 2: 1 2
+    return 0;
+}
+```
+
+输出：
+
+```text
+0:
+3: 0 0 0
+3: 7 7 7
+3: 1 2 3
+3: 1 2 3
+2: 1 2
+```
+
+**② 四种遍历方式**
+
+```c++
+#include <iostream>
+#include <vector>
+#include <cstddef>
+
+int main() {
+    std::vector<int> v = {10, 20, 30};
+
+    for (std::size_t i = 0; i < v.size(); ++i) std::cout << v[i] << ' ';    // 下标
+    std::cout << '\n';
+
+    for (auto it = v.begin(); it != v.end(); ++it) std::cout << *it << ' '; // 迭代器
+    std::cout << '\n';
+
+    for (int x : v) std::cout << x << ' ';                                  // 范围 for
+    std::cout << '\n';
+
+    for (const int& x : v) std::cout << x << ' ';                           // const 引用（只读、免拷贝）
+    std::cout << '\n';
+    return 0;
+}
+```
+
+输出：
+
+```text
+10 20 30
+10 20 30
+10 20 30
+10 20 30
+```
+
+- **下标 `v[i]`**：最快，但**不检查越界**；
+- **迭代器**：通用，便于配合算法；
+- **范围 `for`**：最简洁；
+- **`const int&`**：只读且避免拷贝，遍历大对象时推荐。
+
+**③ 二维 vector**
+
+```c++
+#include <iostream>
+#include <vector>
+
+int main() {
+    // 构造 3 行 4 列、初值为 0 的二维表
+    std::vector<std::vector<int>> grid(3, std::vector<int>(4, 0));
+    grid[1][2] = 9;
+
+    for (const auto& row : grid) {
+        for (int x : row) std::cout << x << ' ';
+        std::cout << '\n';
+    }
+    std::cout << "rows=" << grid.size() << " cols=" << grid[0].size() << '\n';
+    return 0;
+}
+```
+
+输出：
+
+```text
+0 0 0 0
+0 0 9 0
+0 0 0 0
+rows=3 cols=4
+```
+
+> 常用写法：`vector<vector<int>> grid(rows, vector<int>(cols, 初值));`。注意 `>>` 在 C++11 起可直接连写（旧标准需写成 `> >`）。
 
 **动态数组**：连续内存，支持随机访问；是默认首选的容器。
 
@@ -4037,6 +4380,44 @@ int main() {
 ```
 
 > 失效规则：`push_back` / `insert` 可能使**全部**迭代器失效（扩容时）；`erase` 使**被删位置及其后**的迭代器失效。
+
+**④ 常用操作速览**
+
+增删改查 + 排序的连贯示例：
+
+```c++
+#include <iostream>
+#include <vector>
+#include <algorithm>
+
+int main() {
+    std::vector<int> v = {3, 1, 2};     // {3, 1, 2}
+
+    v.push_back(4);                     // 尾插   → {3,1,2,4}
+    v.insert(v.begin(), 0);             // 头插   → {0,3,1,2,4}
+    v.erase(v.begin() + 1);             // 删索引1 → {0,1,2,4}
+    v.pop_back();                       // 删尾   → {0,1,2}
+
+    std::sort(v.begin(), v.end());      // 排序   → {0,1,2}
+    auto it = std::find(v.begin(), v.end(), 2);
+
+    for (int x : v) std::cout << x << ' ';
+    std::cout << '\n';                  // 0 1 2
+    std::cout << (it != v.end()) << '\n';   // 1（找到）
+
+    v.clear();
+    std::cout << v.empty() << '\n';     // 1（已清空）
+    return 0;
+}
+```
+
+输出：
+
+```text
+0 1 2
+1
+1
+```
 
 **成员函数一览**：
 
