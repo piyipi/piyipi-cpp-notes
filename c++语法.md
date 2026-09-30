@@ -5221,15 +5221,23 @@ int main() {
 | `*r` | 未指定（可解引用） | 取当前元素 |
 | `++r` | `It&` | 前进到下一元素 |
 
-**`std::iterator_traits<It>` 的 5 个关联类型**：
+**`std::iterator_traits<It>` 的 5 个关联类型**（算法正是通过这些类型与标签来"泛型地"操作元素）：
 
 | 成员类型 | 含义 |
 |---|---|
-| `value_type` | 元素类型 |
-| `difference_type` | 迭代器差值类型（有符号整数） |
-| `reference` | `*it` 的类型 |
-| `pointer` | `it->` 的类型 |
-| `iterator_category` | 所属迭代器类别标签 |
+| `value_type` | 迭代器所指元素的类型 |
+| `difference_type` | 两个迭代器相减的类型（**有符号整数**，通常是 `ptrdiff_t`） |
+| `reference` | `*it` 返回的类型 |
+| `pointer` | `it->` / `&*it` 相关的类型 |
+| `iterator_category` | 该迭代器所属的**类别标签** |
+
+**逐项说明**：
+
+- **`value_type`**：元素类型。算法用它声明临时变量（如 `accumulate` 的累加器）。注意**代理迭代器**（如 `vector<bool>::iterator`）的 `*it` 可能返回一个代理对象，其类型并不等于 `value_type`。
+- **`difference_type`**：表示"距离"的类型，必须是**有符号整数**；`it2 - it1`、`std::distance` 的结果都是它。
+- **`reference`**：解引用结果的类型。普通可写迭代器为 `T&`；只读迭代器为 `const T&`；代理迭代器可能是**值类型**。
+- **`pointer`**：与 `->`、`&*it` 关联的类型，一般为 `T*`；个别迭代器（如流迭代器）把它定义为 `void`。
+- **`iterator_category`**：类别标签，**告诉算法这个迭代器支持哪些操作**，算法据此选择最优实现。
 
 ```c++
 #include <iostream>
@@ -5256,6 +5264,108 @@ int main() {
 1
 1
 1
+```
+
+用 `iterator_traits` 取元素类型做**泛型求和**（容器 / 元素类型都不同的同一份代码）：
+
+```c++
+#include <iostream>
+#include <iterator>
+#include <vector>
+#include <list>
+
+template <class It>
+typename std::iterator_traits<It>::value_type sum_all(It first, It last) {
+    typename std::iterator_traits<It>::value_type total{};   // 用 value_type 声明累加器
+    for (; first != last; ++first) total += *first;
+    return total;
+}
+
+int main() {
+    std::vector<int> v = {1, 2, 3};
+    std::list<double> l = {1.5, 2.5};
+    std::cout << sum_all(v.begin(), v.end()) << '\n';   // 6
+    std::cout << sum_all(l.begin(), l.end()) << '\n';   // 4
+    return 0;
+}
+```
+
+输出：
+
+```text
+6
+4
+```
+
+**`iterator_category` 标签的含义**
+
+| 标签 | 含义 | 代表 |
+|---|---|---|
+| `input_iterator_tag` | 只读、单遍 | `istream_iterator` |
+| `output_iterator_tag` | 只写、单遍 | `ostream_iterator` |
+| `forward_iterator_tag` | 读写、多遍 | `forward_list`、`unordered_*` |
+| `bidirectional_iterator_tag` | 可 `++` / `--` | `list`、`set`、`map` |
+| `random_access_iterator_tag` | `+` / `-` / `[]` / 比较，均 O(1) | `vector`、`deque`、`array` |
+| `contiguous_iterator_tag`（C++20） | 元素在内存中**连续** | `vector`、`array`、`string` |
+
+标签之间有**继承（is-a）关系**：越高级的迭代器可以当作越低级的来使用。
+
+```text
+input_iterator_tag
+└── forward_iterator_tag
+    └── bidirectional_iterator_tag
+        └── random_access_iterator_tag
+            └── contiguous_iterator_tag   (C++20)
+
+output_iterator_tag   （独立分支，不与上面同链）
+```
+
+算法用**标签分派（tag dispatch）**在编译期选择最佳实现：`std::advance` / `std::distance` 就根据 `iterator_category` 决定用 `O(1)` 还是 `O(n)` 的版本。下面自制一个 `my_distance` 演示：
+
+```c++
+#include <iostream>
+#include <iterator>
+#include <vector>
+#include <list>
+
+// O(1)：随机访问（可直接相减）
+template <class It>
+typename std::iterator_traits<It>::difference_type
+my_distance(It first, It last, std::random_access_iterator_tag) {
+    return last - first;
+}
+
+// O(n)：前向 / 双向（只能逐个前进）
+template <class It>
+typename std::iterator_traits<It>::difference_type
+my_distance(It first, It last, std::input_iterator_tag) {
+    typename std::iterator_traits<It>::difference_type n = 0;
+    for (; first != last; ++first) ++n;
+    return n;
+}
+
+// 分发：按 iterator_category 选择上面的重载
+template <class It>
+typename std::iterator_traits<It>::difference_type
+my_distance(It first, It last) {
+    return my_distance(first, last,
+        typename std::iterator_traits<It>::iterator_category{});
+}
+
+int main() {
+    std::vector<int> v = {0, 1, 2, 3, 4};
+    std::list<int>   l = {0, 1, 2, 3, 4};
+    std::cout << my_distance(v.begin(), v.end()) << '\n';   // 5（走 O(1) 分支）
+    std::cout << my_distance(l.begin(), l.end()) << '\n';   // 5（走 O(n) 分支）
+    return 0;
+}
+```
+
+输出：
+
+```text
+5
+5
 ```
 
 > `std::iterator` 基结构（C++17 起**弃用**）只是为省去手写这 5 个 typedef，现已被 `iterator_traits` 取代。
@@ -5510,19 +5620,30 @@ int main() {
 
 - **迭代器失效**：`vector` 扩容时全部失效；`erase` 使被删位置及其后失效；`list` / `forward_list` / `map` / `set` 只使**被删元素**的迭代器失效。边遍历边删用 `it = c.erase(it);`。
 - **`iterator` vs `const_iterator`**：`cbegin()` / `cend()` 返回只读迭代器，不能修改元素。
-- **`iterator_category` 标签**：`input_iterator_tag`、`output_iterator_tag`、`forward_iterator_tag`、`bidirectional_iterator_tag`、`random_access_iterator_tag`（C++20 增 `contiguous_iterator_tag`）；算法据此选择最优实现。
+- **`iterator_category` 标签及其含义**（算法据此选择最优实现）：
+  - `input_iterator_tag`：只读、单遍 → 输入迭代器；
+  - `output_iterator_tag`：只写、单遍 → 输出迭代器；
+  - `forward_iterator_tag`：读写、多遍 → 前向迭代器（继承 `input`）；
+  - `bidirectional_iterator_tag`：可 `++` / `--` → 双向迭代器（继承 `forward`）；
+  - `random_access_iterator_tag`：`+` / `-` / `[]` / 比较，均 O(1) → 随机访问迭代器（继承 `bidirectional`）；
+  - `contiguous_iterator_tag`（C++20）：元素在内存中连续 → 连续迭代器（继承 `random_access`）。
 
-**Legacy 要求 ↔ C++20 概念对照**：
+**Legacy 具名要求 ↔ C++20 概念**
 
-| Legacy（C++17） | C++20 概念 |
-|---|---|
-| `LegacyIterator` | `std::input_or_output_iterator` |
-| `LegacyInputIterator` | `std::input_iterator` |
-| `LegacyOutputIterator` | `std::output_iterator` |
-| `LegacyForwardIterator` | `std::forward_iterator` |
-| `LegacyBidirectionalIterator` | `std::bidirectional_iterator` |
-| `LegacyRandomAccessIterator` | `std::random_access_iterator` |
-| （无对应） | `std::contiguous_iterator` |
+「五类迭代器」有两套表述：C++17 及以前的 **Legacy 具名要求**（`Legacy*Iterator`）与 C++20 起的**概念（concept）**（`*_iterator`）。二者能力一一对应，但性质不同：
+
+- **Legacy 具名要求**是标准里的**文字约定**，编译器**不会**强制检查；
+- **C++20 概念**是可被 `requires` / `static_assert` 在**编译期强制**检查的约束。
+
+| Legacy（C++17） | C++20 概念 | 含义 |
+|---|---|---|
+| `LegacyIterator` | `std::input_or_output_iterator` | 能 `*i` 且能 `++i` 的**最小**要求 |
+| `LegacyInputIterator` | `std::input_iterator` | 单遍、只读，可判等比较 |
+| `LegacyOutputIterator` | `std::output_iterator` | 单遍、只写 |
+| `LegacyForwardIterator` | `std::forward_iterator` | 多遍 + 真引用 + 默认构造 |
+| `LegacyBidirectionalIterator` | `std::bidirectional_iterator` | 额外支持 `--` |
+| `LegacyRandomAccessIterator` | `std::random_access_iterator` | 额外支持 `O(1)` 跳跃与全序比较 |
+| （无对应） | `std::contiguous_iterator` | 元素在内存中**连续** |
 
 #### 算法（`<algorithm>` / `<numeric>`）
 
