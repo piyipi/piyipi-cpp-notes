@@ -5163,7 +5163,7 @@ int main() {
 
 **优先级队列**，默认**大顶堆**（`top()` 是最大元素）。
 
-**成员函数一览**：
+ **成员函数一览**：
 
 | 成员 | 作用 | 备注 |
 |---|---|---|
@@ -5202,32 +5202,283 @@ int main() {
 
 #### 迭代器
 
-**迭代器**是容器的"泛型指针"，是容器与算法之间的桥梁。
+> 📖 官方文档（cppreference）：[迭代器库（\<iterator\>）](https://zh.cppreference.com/w/cpp/iterator) · [迭代器概念 LegacyIterator](https://zh.cppreference.com/w/cpp/named_req/Iterator) · [iterator_traits](https://zh.cppreference.com/w/cpp/iterator/iterator_traits) · [迭代器类别标签](https://zh.cppreference.com/w/cpp/iterator/iterator_tags)
+> 📖 官方文档（MSVC · Microsoft Learn）：[迭代器](https://learn.microsoft.com/zh-cn/cpp/standard-library/iterators) · [\<iterator\>](https://learn.microsoft.com/zh-cn/cpp/standard-library/iterator) · [iterator_traits 结构](https://learn.microsoft.com/zh-cn/cpp/standard-library/iterator-traits-struct) · [迭代器函数](https://learn.microsoft.com/zh-cn/cpp/standard-library/iterator-functions) · [迭代器概念（C++20）](https://learn.microsoft.com/zh-cn/cpp/standard-library/iterator-concepts)
 
-**常用获取方式**：
+**迭代器（Iterator）** 是对「指针」的泛化抽象：它让**算法**无需了解**容器**的内部结构，只通过 `[begin, end)` 半开区间操作元素——这是 STL「容器与算法解耦」的关键。
 
-| 表达式 | 含义 |
-|---|---|
-| `c.begin()` / `c.end()` | 首元素 / 尾后位置 |
-| `c.cbegin()` / `c.cend()` | const 版本（C++11） |
-| `c.rbegin()` / `c.rend()` | 反向（从尾到头） |
+##### 一、迭代器底层定义
 
-##### 迭代器类别
+所有迭代器都首先满足最基础的 **`LegacyIterator`** 要求：
 
-**迭代器五类**（能力递增）：
+- 满足 `CopyConstructible`、`CopyAssignable`、`Destructible`、`Swappable`；
+- `std::iterator_traits<It>` 提供 `value_type` / `difference_type` / `reference` / `pointer` / `iterator_category` 这 5 个成员。
 
-| 类别 | 能力 | 代表 |
+必需表达式（`r` 为 `It` 类型左值）：
+
+| 表达式 | 返回类型 | 语义 |
 |---|---|---|
-| 输入 / 输出 | 单遍读写 | `istream_iterator` / `ostream_iterator` |
-| 前向 | 多遍、只能 `++` | `forward_list` |
-| 双向 | 可 `++` / `--` | `list`、`set`、`map` |
-| 随机访问 | 可 `+n` / `[i]` / 比较 | `vector`、`deque`、`array` |
+| `*r` | 未指定（可解引用） | 取当前元素 |
+| `++r` | `It&` | 前进到下一元素 |
 
-> 算法对迭代器类别有要求：`std::sort` 需要随机访问迭代器，`list` 不满足，须用成员 `l.sort()`。
+**`std::iterator_traits<It>` 的 5 个关联类型**：
 
-##### 迭代器操作
+| 成员类型 | 含义 |
+|---|---|
+| `value_type` | 元素类型 |
+| `difference_type` | 迭代器差值类型（有符号整数） |
+| `reference` | `*it` 的类型 |
+| `pointer` | `it->` 的类型 |
+| `iterator_category` | 所属迭代器类别标签 |
 
-`advance`（改变自身）、`next` / `prev`（返回新迭代器）、`distance`（求距离）。
+```c++
+#include <iostream>
+#include <iterator>
+#include <type_traits>
+#include <vector>
+#include <list>
+
+int main() {
+    using VI = std::vector<int>::iterator;
+    using LI = std::list<int>::iterator;
+    std::cout << std::is_same<std::iterator_traits<VI>::iterator_category,
+                              std::random_access_iterator_tag>::value << '\n';  // 1
+    std::cout << std::is_same<std::iterator_traits<LI>::iterator_category,
+                              std::bidirectional_iterator_tag>::value << '\n';  // 1
+    std::cout << std::is_same<std::iterator_traits<int*>::value_type, int>::value << '\n';  // 1
+    return 0;
+}
+```
+
+输出：
+
+```text
+1
+1
+1
+```
+
+> `std::iterator` 基结构（C++17 起**弃用**）只是为省去手写这 5 个 typedef，现已被 `iterator_traits` 取代。
+
+##### 二、五类迭代器
+
+| 类别 | 能力 | 代表容器 / 类型 |
+|---|---|---|
+| 输入 | 只读、单遍 | `istream_iterator` |
+| 输出 | 只写、单遍 | `ostream_iterator`、插入迭代器 |
+| 前向 | 读写、多遍 | `forward_list`、`unordered_*` |
+| 双向 | 可前可后 | `list`、`set`/`map`/`multiset`/`multimap` |
+| 随机访问 | 常数时间跳转 | `vector`、`deque`、`array`、`string` |
+
+> 约定：以下每类**只列相对上一类的新增操作**；未列出的操作默认继承自下层类别。
+
+###### 1. 输入迭代器（Input Iterator）
+
+在 `LegacyIterator` 之上新增：满足 `EqualityComparable`；**单遍**（递增后旧副本可能失效）。
+
+| 新增表达式 | 返回 / 类型 | 语义 |
+|---|---|---|
+| `i == j` / `i != j` | 可转 `bool` | 比较 |
+| `*i` | 可转 `value_type` | 读当前元素 |
+| `i->m` | — | 等价 `(*i).m` |
+| `r++` | 可转 `const X&` | 前进（后置） |
+| `*r++` | 可转 `value_type` | 读并前进 |
+
+**属于该类的容器 / 类型**：`std::istream_iterator`、`std::istreambuf_iterator`。
+
+###### 2. 输出迭代器（Output Iterator）
+
+在 `LegacyIterator` 之上新增：**只写、单遍**，不要求比较、不能回读。
+
+| 新增表达式 | 语义 |
+|---|---|
+| `*r = o` | 写入值 `o` |
+| `r++` | 前进（后置） |
+| `*r++ = o` | 写入并前进 |
+
+**属于该类的容器 / 类型**：`std::ostream_iterator`、`std::ostreambuf_iterator`、`std::back_insert_iterator`、`std::front_insert_iterator`、`std::insert_iterator`。
+
+###### 3. 前向迭代器（Forward Iterator）
+
+在 `LegacyInputIterator` 之上新增（**无新表达式**）：
+
+- 满足 `DefaultConstructible`（可默认构造「空」迭代器）；
+- **多遍（multi-pass）保证**：多个副本可各自独立解引用与递增；
+- `reference` 必须是**真正的引用**（`T&` / `const T&`），不能是代理对象。
+
+**属于该类的容器 / 类型**：`std::forward_list`、`std::unordered_set`、`std::unordered_multiset`、`std::unordered_map`、`std::unordered_multimap`。
+
+###### 4. 双向迭代器（Bidirectional Iterator）
+
+在 `LegacyForwardIterator` 之上新增：
+
+| 新增表达式 | 返回 / 类型 | 语义 |
+|---|---|---|
+| `--r` | `X&` | 后退 |
+| `r--` | 可转 `const X&` | 后退（后置） |
+| `*r--` | `reference` | 读并后退 |
+
+**属于该类的容器 / 类型**：`std::list`、`std::set`、`std::multiset`、`std::map`、`std::multimap`（以及 `std::filesystem::path::iterator`）。
+
+###### 5. 随机访问迭代器（Random Access Iterator）
+
+在 `LegacyBidirectionalIterator` 之上新增（全部 **O(1)**）：
+
+| 新增表达式 | 返回 / 类型 | 语义 |
+|---|---|---|
+| `r += n` / `r -= n` | `X&` | 原地跳转 |
+| `r + n` / `n + r` / `r - n` | `X` | 返回跳转后的迭代器 |
+| `b - a` | `difference_type` | 两迭代器距离 |
+| `a[n]` | 可转 `reference` | 等价 `*(a + n)` |
+| `i < j` / `i > j` / `i <= j` / `i >= j` | 可转 `bool` | 全序比较 |
+
+**属于该类的容器 / 类型**：`std::vector`、`std::deque`、`std::array`、`std::string`、`std::string_view`、`std::span`（C++20）；**裸指针 `T*`** 也是随机访问迭代器。
+
+```c++
+#include <iostream>
+#include <vector>
+#include <list>
+#include <forward_list>
+#include <iterator>
+
+int main() {
+    // 随机访问：vector 支持 +、[]、-、比较
+    std::vector<int> v = {10, 20, 30, 40, 50};
+    auto a = v.begin();
+    std::cout << *(a + 2) << ' ' << a[3] << ' ' << (v.end() - v.begin()) << ' '
+              << (a < v.end()) << '\n';   // 30 40 5 1
+
+    // 双向：list 支持 --
+    std::list<int> l = {1, 2, 3};
+    auto it = l.end();
+    --it;
+    std::cout << *it << '\n';             // 3
+
+    // 前向：forward_list 只支持 ++
+    std::forward_list<int> fl = {7, 8, 9};
+    auto fit = fl.begin();
+    ++fit;
+    std::cout << *fit << '\n';            // 8
+    return 0;
+}
+```
+
+输出：
+
+```text
+30 40 5 1
+3
+8
+```
+
+> 易错点：`forward_list` 与四个 `unordered_*` 只有**前向**迭代器；`deque` 是随机访问但**非连续**（不满足 C++20 `contiguous_iterator`）。
+
+##### 三、迭代器适配器（Iterator Adaptors）
+
+适配器**基于已有迭代器**改变其行为：
+
+| 适配器 | 用途 | 注意事项 |
+|---|---|---|
+| `std::reverse_iterator` | 反向遍历（`++` 映射为底层 `--`） | 需底层为双向 / 随机访问；`base()` 取底层迭代器 |
+| `std::back_insert_iterator` | 输出：`*i = x` → `push_back(x)` | 需容器有 `push_back` |
+| `std::front_insert_iterator` | 输出：`*i = x` → `push_front(x)` | 需容器有 `push_front`（`vector` 不行） |
+| `std::insert_iterator` | 输出：`*i = x` → `insert(pos, x)` | 构造时给定插入位置 |
+| `std::move_iterator` | `*i` 变为右值（移动语义） | 由 `make_move_iterator` 生成 |
+| `std::istream_iterator` | 从输入流读取 | 默认构造 = 流末尾哨兵 |
+| `std::ostream_iterator` | 向输出流写入 | 可指定分隔符 |
+
+配套工厂函数：`std::back_inserter(c)` / `std::front_inserter(c)` / `std::inserter(c, pos)` / `std::make_move_iterator(it)`。
+
+C++20/23 新增：`std::common_iterator`、`std::counted_iterator`、`std::move_sentinel`；**C++23** `std::basic_const_iterator` / `std::const_iterator`（把任意迭代器适配为只读）。
+
+```c++
+#include <iostream>
+#include <vector>
+#include <list>
+#include <iterator>
+#include <algorithm>
+
+int main() {
+    std::vector<int> v = {1, 2, 3};
+
+    for (auto rit = v.rbegin(); rit != v.rend(); ++rit) std::cout << *rit << ' ';
+    std::cout << '\n';                                            // 3 2 1
+
+    std::vector<int> dst;
+    std::copy(v.begin(), v.end(), std::back_inserter(dst));       // 尾部插入
+    std::cout << dst.size() << '\n';                              // 3
+
+    std::list<int> l;
+    std::copy(v.begin(), v.end(), std::front_inserter(l));        // 头部插入
+    std::cout << l.front() << '\n';                               // 3
+
+    std::vector<int> w = {1, 3};
+    auto pos = std::next(w.begin());
+    std::fill_n(std::inserter(w, pos), 1, 2);                     // 中间插入
+    for (int x : w) std::cout << x << ' ';
+    std::cout << '\n';                                            // 1 2 3
+    return 0;
+}
+```
+
+输出：
+
+```text
+3 2 1
+3
+3
+1 2 3
+```
+
+```c++
+#include <iostream>
+#include <sstream>
+#include <vector>
+#include <iterator>
+#include <string>
+#include <algorithm>
+
+int main() {
+    std::vector<int> v = {1, 2, 3};
+    std::copy(v.begin(), v.end(), std::ostream_iterator<int>(std::cout, ","));
+    std::cout << '\n';                                            // 1,2,3,
+
+    std::istringstream iss("10 20 30");
+    std::istream_iterator<int> eos, it(iss);
+    int sum = 0;
+    while (it != eos) { sum += *it; ++it; }
+    std::cout << sum << '\n';                                     // 60
+
+    std::vector<std::string> src = {"a", "b"};
+    std::vector<std::string> dst(
+        std::make_move_iterator(src.begin()),
+        std::make_move_iterator(src.end()));                      // 移动构造
+    std::cout << dst.size() << '\n';                              // 2
+    return 0;
+}
+```
+
+输出：
+
+```text
+1,2,3,
+60
+2
+```
+
+##### 四、iterator 库常用成员函数与其它特性
+
+**常用自由函数**（均在 `<iterator>`）：
+
+| 函数 | 用途 | 关键点 |
+|---|---|---|
+| `std::advance(it, n)` | 原地前进 `n` 位 | 双向 / 随机访问可 `n<0`；随机访问 O(1)，否则 O(n) |
+| `std::next(it, n=1)` | 返回前进后的新迭代器 | 需输入迭代器 |
+| `std::prev(it, n=1)` | 返回后退后的新迭代器 | 需双向迭代器 |
+| `std::distance(first, last)` | 求两迭代器距离 | 随机访问 O(1)，否则 O(n) |
+| `std::iter_swap(a, b)` | 交换 `*a` 与 `*b` | — |
+| `std::begin/end`、`cbegin/cend`、`rbegin/rend`、`crbegin/crend` | 取各类迭代器 | C++11 / C++14 |
+| `std::size`、`std::empty`、`std::data` | 元素个数 / 判空 / 首指针 | C++17 |
 
 ```c++
 #include <iostream>
@@ -5237,11 +5488,11 @@ int main() {
 int main() {
     std::vector<int> v = {10, 20, 30, 40, 50};
     auto it = v.begin();
-    std::advance(it, 2);                 // 前进 2 步
-    std::cout << *it << '\n';            // 30
-    std::cout << *std::next(it) << '\n'; // 40
-    std::cout << *std::prev(it) << '\n'; // 20
-    std::cout << std::distance(v.begin(), v.end()) << '\n';  // 5
+    std::advance(it, 2);
+    std::cout << *it << '\n';                                  // 30
+    std::cout << *std::next(it) << '\n';                       // 40
+    std::cout << *std::prev(it) << '\n';                       // 20
+    std::cout << std::distance(v.begin(), v.end()) << '\n';    // 5
     return 0;
 }
 ```
@@ -5255,15 +5506,23 @@ int main() {
 5
 ```
 
-##### 迭代器失效
+**其它特性**：
 
-**迭代器失效规则**：
+- **迭代器失效**：`vector` 扩容时全部失效；`erase` 使被删位置及其后失效；`list` / `forward_list` / `map` / `set` 只使**被删元素**的迭代器失效。边遍历边删用 `it = c.erase(it);`。
+- **`iterator` vs `const_iterator`**：`cbegin()` / `cend()` 返回只读迭代器，不能修改元素。
+- **`iterator_category` 标签**：`input_iterator_tag`、`output_iterator_tag`、`forward_iterator_tag`、`bidirectional_iterator_tag`、`random_access_iterator_tag`（C++20 增 `contiguous_iterator_tag`）；算法据此选择最优实现。
 
-- `vector`：扩容时**全部失效**；`erase` 使被删位置及其后失效。
-- `deque`：头尾插入可能导致迭代器失效；中间插删影响较大。
-- `list` / `forward_list` / `map` / `set`：只有**被删元素**的迭代器失效，其他不受影响。
+**Legacy 要求 ↔ C++20 概念对照**：
 
-> 边遍历边删除的正确写法：`it = c.erase(it);`（`erase` 返回下一个有效迭代器）。
+| Legacy（C++17） | C++20 概念 |
+|---|---|
+| `LegacyIterator` | `std::input_or_output_iterator` |
+| `LegacyInputIterator` | `std::input_iterator` |
+| `LegacyOutputIterator` | `std::output_iterator` |
+| `LegacyForwardIterator` | `std::forward_iterator` |
+| `LegacyBidirectionalIterator` | `std::bidirectional_iterator` |
+| `LegacyRandomAccessIterator` | `std::random_access_iterator` |
+| （无对应） | `std::contiguous_iterator` |
 
 #### 算法（`<algorithm>` / `<numeric>`）
 
